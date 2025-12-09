@@ -1,0 +1,2 @@
+class ContainerExistsError(Exception):
+    pass
