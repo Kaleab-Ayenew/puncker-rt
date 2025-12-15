@@ -17,19 +17,6 @@ It is designed to replace `runc` in the Docker stack to demonstrate exactly how 
 
 Puncker implements the [OCI Runtime Specification](https://github.com/opencontainers/runtime-spec). It acts as a translation layer between a JSON configuration and the Linux Kernel.
 
-### The Architecture
-
-```mermaid
-graph TD
-    A[Docker CLI] -->|1. Call API| B[Docker Daemon]
-    B -->|2. Call| C[Containerd]
-    C -->|3. Spawn| D[Containerd Shim]
-    D -->|4. Exec| E[Puncker (Parent)]
-    E -->|5. Clone/Unshare| F[Puncker (Child)]
-    F -->|6. Pivot Root| G[Filesystem Cage]
-    G -->|7. Execve| H[User Application]
-```
-
 ### The "Magic" Explained
 
 Unlike high-level libraries, Puncker talks directly to the kernel. Here are the core concepts implemented in this repo:
