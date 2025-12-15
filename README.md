@@ -9,6 +9,10 @@
 
 It is designed to replace `runc` in the Docker stack to demonstrate exactly how containers work under the hood. It uses `ctypes` to interact directly with Linux system calls (`unshare`, `mount`, `pivot_root`, `execve`), making the "black magic" of containerization readable and understandable.
 
+<div align="center">
+  <img src="https://github.com/Kaleab-Ayenew/demo_vids/raw/main/Screencast%20from%2012-09-2025%2002_21_26%20PM.gif" alt="Puncker Demo" width="100%">
+</div>
+
 **Goal:** To demystify container internals for developers who find Go or C implementations of `runc` difficult to parse.
 
 ---
