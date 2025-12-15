@@ -9,6 +9,7 @@ import logging
 import errno
 from datetime import datetime
 from typing import Literal
+from pyprctl import Cap, CapState, capbset, cap_ambient
 from src.constants import COMMON_LIBC_FLAGS as uflags, TIME_FLAGS
 from src.constants import CONFIG_FLAG_MAP as flag_map
 from src.constants import MOUNT_FLAG_MAPS as mnt_flags
@@ -24,10 +25,6 @@ logging.basicConfig(
     format='%(asctime)s [%(process)d] %(levelname)s: %(message)s'
 )
 
-REAL_STDERR = sys.stderr
-sys.stderr = open("/tmp/puncker-debug.log", "a")
-REAL_STDOUT = sys.stdout
-sys.stdout = open("/tmp/puncker-debug.log", "a")
 
 
 def parse_env_vars(env_list: list):
@@ -46,7 +43,7 @@ def rm_dir(path: str):
     try:
         shutil.rmtree(path)
     except OSError as e:
-        print(f"Error: {e.filename} - {e.strerror}.", flush=True)
+        logging.error(f"Error: {e.filename} - {e.strerror}.")
 
 def perform_mount_sequence(oci_config, root_path):
     # Mount the filesystems specified in the config
@@ -74,7 +71,7 @@ def perform_mount_sequence(oci_config, root_path):
         if m_src.decode() and Path(m_src.decode()).is_file():
             os.makedirs(Path(m_trgt_abs.decode()).parent, exist_ok=True)
             with open(m_trgt_abs.decode(), "w") as f:
-                print("Creating ", m_trgt_abs.decode(), flush=True)
+                logging.debug(f"Creating {m_trgt_abs.decode()}")
                 pass
         else:
             os.makedirs(m_trgt_abs.decode(), exist_ok=True)
@@ -97,12 +94,12 @@ def perform_mount_sequence(oci_config, root_path):
         libc.umount2(ctypes.c_char_p(m_trgt_abs), 2)
         # Set fs_type_arg to None for bind mount
         if is_bind_flag or is_bind_type:
-            print("[*] Bind operation confiremed")
+            logging.debug("[*] Bind operation confiremed")
             initial_flags |= uflags.MS_BIND
             fs_type_arg = None
             data_arg = None
         else:
-            print(f"[*] Not a bind opearation: {m_type}")
+            logging.warning(f"[*] Not a bind opearation: {m_type}")
             fs_type_arg = ctypes.c_char_p(m_type)
             data_arg = ctypes.c_char_p(data_str.encode("utf-8"))
         # Perform the mount
@@ -180,6 +177,61 @@ def apply_cgroup_limits(oci_config, cgroup_path):
             with open(os.path.join(cgroup_path, f"pids.max"), "w") as f:
                 f.write(str(pid_cg.get("limit", "")))
 
+
+def apply_capabilities(oci_config):
+        CAP_MAP = {f"CAP_{c.name}": c for c in Cap}
+
+        
+        allowed_cap_list = oci_config["process"].get("capabilities", dict())
+        effective_set, bounding_set, inheritable_set, permitted_set, ambient_set = set(), set(), set(), set(), set()
+        for cap_type in allowed_cap_list:
+            if cap_list := allowed_cap_list[cap_type]:
+                if cap_type == "effective":
+                    effective_set = set([CAP_MAP[c] for c in cap_list])
+                elif cap_type == "bounding":
+                    bounding_set = set([CAP_MAP[c] for c in cap_list])
+                elif cap_type == "inheritable":
+                    inheritable_set = set([CAP_MAP[c] for c in cap_list])
+                elif cap_type == "permitted":
+                    permitted_set = set([CAP_MAP[c] for c in cap_list])
+                elif cap_type == "ambient":
+                    ambient_set = set([CAP_MAP[c] for c in cap_list])
+                else:
+                    logging.warning("Unknown cap type.")
+
+        for cap in Cap:
+            # Check if the capability is currently in the bounding set
+            if cap not in bounding_set:
+                try:
+                    capbset.drop(cap)
+                except PermissionError:
+                    logging.error(f"[!] Failed to drop {cap.name}: Missing CAP_SETPCAP.")
+                    return
+                except OSError:
+                    pass
+        logging.debug("[+] Bounding CAP set cleared.")
+
+        for cap in Cap:
+            try:
+                if cap not in ambient_set:
+                    cap_ambient.drop(cap)
+            except OSError:
+                # Handle kernels that don't support ambient caps
+                pass
+        logging.debug("[+] Ambient set cleared.")
+
+        empty_state = CapState(
+            effective=set(effective_set), 
+            permitted=set(permitted_set), 
+            inheritable=set(inheritable_set),
+        )
+        # Apply the empty state
+        empty_state.set_current()
+
+        logging.debug("[+] Effective/Permitted/Inheritable sets cleared.")
+
+
+
 def clean_up(container_id: str, oci_config: str):
     dir_path = f"/run/puncker-rt/{container_id}"
     cgroup_path = get_cgroup_path(oci_config, container_id)
@@ -218,9 +270,9 @@ def create(container_id: str, bundle_path: str, mode: Literal["foreground", "det
 
     try:
         os.mkfifo(os.path.join(container_state_dir, "exec.fifo"), 0o600)
-        print(f"Created exec.fifo file for container id: {container_id}", flush=True)
+        logging.debug(f"Created exec.fifo file for container id: {container_id}")
     except FileExistsError:
-        print("exec.fifo already exists", flush=True)
+        logging.warning("exec.fifo already exists")
 
     # Prepare an old_root directory for the pivot root
     os.makedirs(os.path.join(root_path, "old_root"), exist_ok=True)
@@ -258,6 +310,7 @@ def create(container_id: str, bundle_path: str, mode: Literal["foreground", "det
 
         # Use unshare syscall to perform process isolation
         libc.unshare(final_unshare_flag)
+
 
 
         # Convert the rootfs directory to a mountpoint to fullfill the requirement for pivot root
@@ -300,25 +353,36 @@ def create(container_id: str, bundle_path: str, mode: Literal["foreground", "det
         args = process_data['args']
         env_vars = parse_env_vars(process_data['env'])
         executable_path = shutil.which(command, path=env_vars["PATH"])
+        if not executable_path:
+            executable_path = command
 
         os.chdir(process_data["cwd"])
-        print("Blocking untill somebody writes to the exec.fifo file", flush=True)
+        logging.debug("Blocking untill somebody writes to the exec.fifo file")
         os.write(sync_pipe_wr, b"0")
         os.read(fifo_fd, 1)
         os.close(fifo_fd)
-        print("I have been called from my sleep. Lets do this!", flush=True)
+        logging.debug("I have been called from my sleep. Lets do this!")
 
         # Set the process uid and gid
         os.setgid(process_data['user']['gid'])
         os.setuid(process_data['user']['uid'])
 
+        # Apply cap limits
+        apply_capabilities(oci_config)
+
+
         # The first argument in the list must be the command name itself.
-        os.execve(executable_path, args, env_vars)
+        try:
+            os.execve(executable_path, args, env_vars)
+        except OSError as e:
+            logging.error(str(e))
+            raise e
+
 
         
     else:
         os.close(sync_pipe_wr)
-        print("Hello from the parent")
+        logging.debug("Hello from the parent")
 
         # Wait till the child says it is done creating the container
         data = os.read(sync_pipe_rd, 1)
@@ -361,7 +425,7 @@ def create(container_id: str, bundle_path: str, mode: Literal["foreground", "det
 
         if mode == "foreground":
             _, status = os.waitpid(child_pid, 0)
-            print(f"Container exited with status {status}", flush=True)
+            logging.debug(f"Container exited with status {status}")
             sys.exit(status)
 
 
@@ -370,7 +434,7 @@ def start(container_id: str):
     if container_id not in os.listdir("/run/puncker-rt/"):
         raise ValueError(f"Couldn't find container with id: {container_id}")
     container_state_dir = f"/run/puncker-rt/{container_id}"
-    print(f"Bringing the container with id {container_id} up.", flush=True)
+    logging.debug(f"Bringing the container with id {container_id} up.")
     with open(os.path.join(container_state_dir, "exec.fifo"), "w") as f:
         f.write("1")
     # Update the state.json file
@@ -397,7 +461,7 @@ def state(container_id: str, pr_std=True):
             json.dump(parsed_data, f, indent=2)
             f.truncate()
     if pr_std:
-        print(parsed_data, file=REAL_STDOUT, flush=True)
+        print(parsed_data)
     return parsed_data
 
 
@@ -410,7 +474,7 @@ def delete(container_id: str, force=False):
         raise ValueError("Please stop the container before trying to delete it.")
     oci_config = parse_oci_config(os.path.join(state_data["bundle"], "config.json"))
     clean_up(container_id, oci_config) # Perform cleanup
-    print(f"[*] Removed container with id: {container_id}.")
+    logging.debug(f"[*] Removed container with id: {container_id}.")
     sys.exit(0)
 
 
@@ -434,7 +498,7 @@ def kill(container_id: str, signal: str | None = None):
         os.kill(state_data["pid"], 15)
     elif signal in ["SIGUSR1", "USR1", "10"]:
         os.kill(state_data["pid"], 10)
-    print(f"Killed container with id: {container_id}, pid: {state_data['pid']}")
+    logging.debug(f"Killed container with id: {container_id}, pid: {state_data['pid']}")
     
     # Update the state.json file
     with open(os.path.join(state_dir, "state.json"), "r+") as f:
@@ -446,11 +510,11 @@ def kill(container_id: str, signal: str | None = None):
         f.truncate()
 
 def features():
-    print(FEATURES_JSON, flush=True)
+    print(FEATURES_JSON)
 
 
 def main():
-    print(sys.argv)
+    logging.debug(sys.argv)
     parser = argparse.ArgumentParser(description="Puncker container runtime")
 
     parser.add_argument("--root", help="Root directory for storage of container state (Ignored)")
@@ -505,7 +569,6 @@ def main():
     elif c_args.command == "state":
         state(c_args.container_id)
     elif c_args.command == "delete":
-        print("Force command looks like this:", c_args.force)
         delete(c_args.container_id, force=c_args.force)
     elif c_args.command == "kill":
         kill(c_args.container_id)
@@ -521,4 +584,5 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.stderr.flush()
-        print("Runtime Error! Check /tmp/puncker-debug.log for details.\n", file=REAL_STDOUT, flush=True)
+        print("Runtime Error! Check /tmp/puncker-debug.log for details.\n")
+
