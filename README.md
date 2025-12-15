@@ -5,7 +5,7 @@
 [![OCI Compliant](https://img.shields.io/badge/OCI-Compliant-green)](https://opencontainers.org/)
 [![Platform](https://img.shields.io/badge/platform-linux-lightgrey)]()
 
-**Puncker** is an educational, OCI-compliant container runtime written in pure Python. 
+**Puncker-rt** is an educational, OCI-compliant container runtime written in pure Python. 
 
 It is designed to replace `runc` in the Docker stack to demonstrate exactly how containers work under the hood. It uses `ctypes` to interact directly with Linux system calls (`unshare`, `mount`, `pivot_root`, `execve`), making the "black magic" of containerization readable and understandable.
 
