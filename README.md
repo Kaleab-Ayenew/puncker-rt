@@ -13,7 +13,7 @@ It is designed to replace `runc` in the Docker stack to demonstrate exactly how 
   <img src="https://github.com/Kaleab-Ayenew/demo_vids/raw/main/Screencast%20from%2012-09-2025%2002_21_26%20PM.gif" alt="Puncker Demo" width="100%">
 </div>
 
-**Goal:** To demystify container internals for developers who find Go or C implementations of `runc` difficult to parse.
+**Goal:** Just to learn how Docker works under the hood, and to have fun ofc!
 
 ---
 
@@ -46,7 +46,7 @@ Unlike high-level libraries, Puncker talks directly to the kernel. Here are the 
 Clone the repo and install the binary.
 
 ```bash
-git clone https://github.com/yourusername/puncker.git
+git clone https://github.com/kaleab-ayenew/puncker.git
 cd puncker/runtime
 pip install .
 ```
